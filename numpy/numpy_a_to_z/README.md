@@ -31,7 +31,7 @@ jupyter notebook NumPy_A_to_Z.ipynb
 
 Most NumPy tutorials assume you already know what "vectorization" or
 "broadcasting" means. This notebook explains those ideas the way you
-would explain them to a friend who has never heard the terms before,
+would explain them to a friend who has never heard the terms with practical example before,
 using everyday examples like exam marks and temperatures, then backs
 every explanation with runnable code.
 
