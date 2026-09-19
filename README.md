@@ -11,7 +11,7 @@ read from scratch to advanced, in plain language, with runnable code.
 |---|---|
 | [`Pandas_A_to_Z.ipynb`](./pandas/Pandas_A_to_Z.ipynb) | Data loading, cleaning, indexing, GroupBy, merging, reshaping, time series, performance |
 | [`NumPy_A_to_Z.ipynb`](./numpy/NumPy_A_to_Z.ipynb) | Arrays, indexing, broadcasting, vectorization, linear algebra, random sampling |
-| [`Matplotlib_A_to_Z.ipynb`](./matplot/Matplotlib_A_to_Z.ipynb) | Core plotting concepts, EDA plots, and ML-specific plots (loss curves, confusion matrices, ROC curves) |
+| [`Matplotlib_A_to_Z.ipynb`](./matplotlib/Matplotlib_A_to_Z.ipynb) | Core plotting concepts, EDA plots, and ML-specific plots (loss curves, confusion matrices, ROC curves) |
 
 
 ## Planned additions
