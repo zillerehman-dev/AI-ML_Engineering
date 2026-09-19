@@ -23,7 +23,7 @@ data (numbers, marks, temperatures, prices) so anyone can follow along.
 ```bash
 git clone <this-repo-url>
 cd <this-repo-folder>
-pip install numpy jupyter
+pip install numpy jupyter # If you don't want to install jupyter then you can use google colab
 jupyter notebook NumPy_A_to_Z.ipynb
 ```
 
