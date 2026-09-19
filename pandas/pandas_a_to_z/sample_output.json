@@ -1,0 +1,1 @@
+[{"gesture":"Hello","confidence":0.98,"frames_used":15,"recorded_at":"2025-01-01T10:00:00.000"},{"gesture":"Thanks","confidence":0.91,"frames_used":18,"recorded_at":"2025-01-01T10:01:00.000"},{"gesture":"Yes","confidence":0.87,"frames_used":12,"recorded_at":"2025-01-01T10:02:00.000"},{"gesture":"No","confidence":0.95,"frames_used":14,"recorded_at":"2025-01-01T10:03:00.000"}]
