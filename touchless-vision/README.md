@@ -76,7 +76,7 @@ touchless-vision/
 ## Installation
 
 ```bash
-git clone https://github.com/zillerehman-dev/gesture-vision.git
+git clone https://github.com/zillerehman-dev/touchless-vision.git
 cd touchless-vision
 
 python -m venv .venv
