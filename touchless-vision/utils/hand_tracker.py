@@ -1,186 +1,166 @@
-import cv2
-import time
-import mediapipe as mp
 import math
+import time
+from pathlib import Path
+
+import cv2
+import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
-MODEL_PATH = "hand_landmarker.task"
-DETECTION_SCALE = 0.6
+MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "hand_landmarker.task"
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/1/hand_landmarker.task"
+)
 
-HAND_CONNECTIONS = [
-    (0,1),(1,2),(2,3),(3,4),
-    (0,5),(5,6),(6,7),(7,8),
-    (5,9),(9,10),(10,11),(11,12),
-    (9,13),(13,14),(14,15),(15,16),
-    (13,17),(17,18),(18,19),(19,20),(0,17)
-]
+DETECTION_SCALE = 0.6
+MAX_MISSED_FRAMES = 3
+
+WRIST, THUMB_TIP, INDEX_TIP, MIDDLE_MCP, MIDDLE_TIP = 0, 4, 8, 9, 12
+FINGER_TIPS = {"index": 8, "middle": 12, "ring": 16, "pinky": 20}
+
+# A finger counts as extended when its tip is clearly farther from the wrist
+# than its middle joint (PIP), and folded when it is not. The gap in between
+# is a dead zone that keeps half-bent fingers from flickering between states.
+EXTENDED_RATIO = 1.15
+FOLDED_RATIO = 1.0
+
+HAND_CONNECTIONS = (
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (5, 9), (9, 10), (10, 11), (11, 12),
+    (9, 13), (13, 14), (14, 15), (15, 16),
+    (13, 17), (17, 18), (18, 19), (19, 20),
+    (0, 17),
+)
+
+
+class TrackerError(RuntimeError):
+    pass
+
+
+def distance(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
 
 class HandTracker:
-    def __init__(self):
-        base_options = mp_python.BaseOptions(model_asset_path=MODEL_PATH)
+    def __init__(self, model_path=MODEL_PATH):
+        model_path = Path(model_path)
+        if not model_path.is_file():
+            raise TrackerError(
+                f"MediaPipe model not found at {model_path}\n"
+                f"Download it from:\n  {MODEL_URL}\n"
+                f"and save it as {model_path}"
+            )
         options = vision.HandLandmarkerOptions(
-            base_options=base_options,
+            base_options=mp_python.BaseOptions(model_asset_path=str(model_path)),
+            running_mode=vision.RunningMode.VIDEO,
             num_hands=2,
-            min_hand_detection_confidence=0.4,
-            min_tracking_confidence=0.4,
-            running_mode=vision.RunningMode.VIDEO
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5,
         )
-        self.detector = vision.HandLandmarker.create_from_options(options)
-        self.landmarks = None
-        self.multi_landmarks = []
-        self._middle_state = False
-        self.raw_hand_landmarks = []
+        try:
+            self._landmarker = vision.HandLandmarker.create_from_options(options)
+        except (RuntimeError, ValueError) as error:
+            raise TrackerError(f"Could not initialise MediaPipe HandLandmarker: {error}") from error
 
-        self.smooth_x = None
-        self.smooth_y = None
-        self.smoothing = 0.6
+        self.hands = []
+        self._missed_frames = 0
+        self._start_time = time.monotonic()
+        self._last_timestamp = -1
 
-        self.lost_frames = 0
-        self.max_lost_frames = 4
-
-        self.multi_lost_frames = 0
-        self.max_multi_lost_frames = 8  
-
-        self._pinch_state = False
-
-        self._start_time = time.time()
-
-    def find_hand(self, frame):
+    def update(self, frame):
+        height, width = frame.shape[:2]
         small = cv2.resize(frame, None, fx=DETECTION_SCALE, fy=DETECTION_SCALE)
-        rgb_frame = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-        timestamp_ms = int((time.time() - self._start_time) * 1000)
-        result = self.detector.detect_for_video(mp_image, timestamp_ms)
-        self.raw_hand_landmarks = result.hand_landmarks if result.hand_landmarks else []
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
 
-        # ---- إيد واحدة (للمؤشر) ----
-        if result.hand_landmarks:
-            self.landmarks = result.hand_landmarks[0]
-            self.lost_frames = 0
-        else:
-            self.lost_frames += 1
-            if self.lost_frames > self.max_lost_frames:
-                self.landmarks = None
-
-        # ---- إيدين (للمستطيل) - ميتحدثش إلا لو الاتنين ظاهرين ----
-        if result.hand_landmarks and len(result.hand_landmarks) >= 2:
-            self.multi_landmarks = result.hand_landmarks
-            self.multi_lost_frames = 0
-        else:
-            self.multi_lost_frames += 1
-            if self.multi_lost_frames > self.max_multi_lost_frames:
-                self.multi_landmarks = result.hand_landmarks if result.hand_landmarks else []
+        timestamp = max(int((time.monotonic() - self._start_time) * 1000), self._last_timestamp + 1)
+        self._last_timestamp = timestamp
+        result = self._landmarker.detect_for_video(image, timestamp)
 
         if result.hand_landmarks:
-            h, w, _ = frame.shape
-            for hand in result.hand_landmarks:
-                for lm in hand:
-                    x, y = int(lm.x * w), int(lm.y * h)
-                    cv2.circle(frame, (x, y), 4, (0, 255, 0), -1)
-                for start, end in HAND_CONNECTIONS:
-                    x1, y1 = int(hand[start].x * w), int(hand[start].y * h)
-                    x2, y2 = int(hand[end].x * w), int(hand[end].y * h)
-                    cv2.line(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
-
-        return frame
-
-    def get_index_finger_position(self, frame_width, frame_height):
-        if self.landmarks is None:
-            return None
-        index_tip = self.landmarks[8]
-        x = int(index_tip.x * frame_width)
-        y = int(index_tip.y * frame_height)
-
-        if self.smooth_x is None:
-            self.smooth_x, self.smooth_y = x, y
+            self.hands = [
+                [(int(p.x * width), int(p.y * height)) for p in hand]
+                for hand in result.hand_landmarks
+            ]
+            self._missed_frames = 0
         else:
-            self.smooth_x = int(self.smooth_x * self.smoothing + x * (1 - self.smoothing))
-            self.smooth_y = int(self.smooth_y * self.smoothing + y * (1 - self.smoothing))
+            self._missed_frames += 1
+            if self._missed_frames > MAX_MISSED_FRAMES:
+                self.hands = []
 
-        return (self.smooth_x, self.smooth_y)
+    def close(self):
+        self._landmarker.close()
 
-    # def is_pinching(self, frame_width, frame_height):
-    #     if self.landmarks is None:
-    #         return False
-    #     thumb_tip = self.landmarks[4]
-    #     index_tip = self.landmarks[8]
-    #     x1, y1 = thumb_tip.x * frame_width, thumb_tip.y * frame_height
-    #     x2, y2 = index_tip.x * frame_width, index_tip.y * frame_height
-    #     return math.hypot(x2 - x1, y2 - y1) < 60
+    def all_hands(self):
+        return self.hands
 
-    def is_pinching(self, frame_width, frame_height):
-        if self.landmarks is None:
-            self._pinch_state = False
-            return False
-        thumb_tip = self.landmarks[4]
-        index_tip = self.landmarks[8]
-        x1, y1 = thumb_tip.x * frame_width, thumb_tip.y * frame_height
-        x2, y2 = index_tip.x * frame_width, index_tip.y * frame_height
-        distance = math.hypot(x2 - x1, y2 - y1)
+    def draw(self, frame):
+        for hand in self.hands:
+            for start, end in HAND_CONNECTIONS:
+                cv2.line(frame, hand[start], hand[end], (255, 255, 255), 2)
+            for point in hand:
+                cv2.circle(frame, point, 4, (0, 255, 0), -1)
 
-        if not self._pinch_state:
-            if distance < 55:
-                self._pinch_state = True
-        else:
-            if distance > 75:
-                self._pinch_state = False
+    def _main_hand(self):
+        return self.hands[0] if self.hands else None
 
-        return self._pinch_state
+    @staticmethod
+    def _palm_size(hand):
+        return distance(hand[WRIST], hand[MIDDLE_MCP])
 
-    def is_fist(self):
-        if self.landmarks is None:
-            return False
-        tips_ids = [8, 12, 16, 20]
-        folded = sum(1 for tip_id in tips_ids if self.landmarks[tip_id].y > self.landmarks[tip_id - 2].y)
-        return folded == 4
+    @staticmethod
+    def _tip_ratio(hand, tip_id):
+        wrist = hand[WRIST]
+        return distance(hand[tip_id], wrist) / max(distance(hand[tip_id - 2], wrist), 1e-6)
+
+    def _extended(self, hand, finger):
+        return self._tip_ratio(hand, FINGER_TIPS[finger]) > EXTENDED_RATIO
+
+    def _folded(self, hand, finger):
+        return self._tip_ratio(hand, FINGER_TIPS[finger]) < FOLDED_RATIO
+
+    def index_tip(self):
+        hand = self._main_hand()
+        return hand[INDEX_TIP] if hand else None
+
+    def pinch_ratio(self):
+        # Thumb-to-index distance as a fraction of palm size, smallest over all hands,
+        # so the value does not depend on how far the hand is from the camera.
+        ratios = [
+            distance(hand[THUMB_TIP], hand[INDEX_TIP]) / max(self._palm_size(hand), 1e-6)
+            for hand in self.hands
+        ]
+        return min(ratios) if ratios else None
+
+    def is_index_up(self):
+        hand = self._main_hand()
+        return bool(hand) and self._extended(hand, "index")
+
+    def is_middle_up(self):
+        hand = self._main_hand()
+        return bool(hand) and self._extended(hand, "middle")
 
     def is_open_palm(self):
-        if self.landmarks is None:
-            return False
-        tips_ids = [8, 12, 16, 20]
-        fingers_up = sum(1 for tip_id in tips_ids if self.landmarks[tip_id].y < self.landmarks[tip_id - 2].y)
-        return fingers_up == 4
-        
-    def get_two_hand_points(self, frame_width, frame_height):  
-        points = []
-        for hand in self.multi_landmarks: 
-            thumb = hand[4]
-            index = hand[8]
-            points.append((int(thumb.x * frame_width), int(thumb.y * frame_height)))
-            points.append((int(index.x * frame_width), int(index.y * frame_height)))
-        return points
+        hand = self._main_hand()
+        return bool(hand) and all(self._extended(hand, finger) for finger in FINGER_TIPS)
 
-    def get_index_middle_spread(self, frame_width, frame_height):
-        if self.landmarks is None:
-            return 0
-        index_tip = self.landmarks[8]
-        middle_tip = self.landmarks[12]
-        x1, y1 = index_tip.x * frame_width, index_tip.y * frame_height
-        x2, y2 = middle_tip.x * frame_width, middle_tip.y * frame_height
-        return math.hypot(x2 - x1, y2 - y1)
+    def is_fist(self):
+        hand = self._main_hand()
+        return bool(hand) and all(self._folded(hand, finger) for finger in FINGER_TIPS)
 
+    def index_middle_spread(self):
+        hand = self._main_hand()
+        if not hand:
+            return 0.0
+        return distance(hand[INDEX_TIP], hand[MIDDLE_TIP]) / max(self._palm_size(hand), 1e-6)
 
-    def is_middle_up(self, frame_width, frame_height):
-        if self.landmarks is None:
-            self._middle_state = False
-            return False
-        tip_y = self.landmarks[12].y * frame_height
-        pip_y = self.landmarks[10].y * frame_height
-        diff = pip_y - tip_y  
-        if not self._middle_state:
-            if diff > 25:
-                self._middle_state = True
-        else:
-            if diff < 10:
-                self._middle_state = False
-
-        return self._middle_state
-        
-
-    def get_all_landmarks_pixels(self, frame_width, frame_height):
-        hands_pixels = []
-        for hand in self.raw_hand_landmarks:
-            pts = [(int(lm.x * frame_width), int(lm.y * frame_height)) for lm in hand]
-            hands_pixels.append(pts)
-        return hands_pixels
+    def two_hand_points(self):
+        if len(self.hands) < 2:
+            return []
+        return [
+            point
+            for hand in self.hands[:2]
+            for point in (hand[THUMB_TIP], hand[INDEX_TIP])
+        ]

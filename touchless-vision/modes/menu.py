@@ -1,63 +1,84 @@
 import cv2
+import numpy as np
 
-buttons_config = [
-    {"key": "ghost",  "label": "Ghost Mode"},
-    {"key": "canvas", "label": "Air Canvas"},
-]
+from modes import CANVAS, GHOST
 
 SIDEBAR_WIDTH = 260
+SIDEBAR_PADDING = 20
+BUTTON_TOP = 130
 BUTTON_HEIGHT = 80
-BUTTON_MARGIN = 20
+BUTTON_GAP = 20
+BUTTONS = (("Ghost Mode", GHOST), ("Air Canvas", CANVAS))
 
-def get_buttons(frame_width):
-    buttons = {}
-    start_y = 130
-    sidebar_x1 = frame_width - SIDEBAR_WIDTH
-    for i, btn in enumerate(buttons_config):
-        y1 = start_y + i * (BUTTON_HEIGHT + BUTTON_MARGIN)
-        y2 = y1 + BUTTON_HEIGHT
-        x1 = sidebar_x1 + 20
-        x2 = frame_width - 20
-        buttons[btn["key"]] = {"pos": (x1, y1, x2, y2), "label": btn["label"]}
-    return buttons
+PANEL_COLOR = 30
+BUTTON_COLOR = (60, 60, 60)
+HOVER_COLOR = (0, 165, 255)
+CURSOR_IDLE = (255, 0, 0)
+CURSOR_PINCH = (0, 0, 255)
 
-def draw_menu(frame, cursor_pos):
-    h, w, _ = frame.shape
-    sidebar_x1 = w - SIDEBAR_WIDTH
-    buttons = get_buttons(w)
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (sidebar_x1, 0), (w, h), (30, 30, 30), -1)
-    frame = cv2.addWeighted(overlay, 0.75, frame, 0.25, 0)
+class MenuMode:
+    def __init__(self):
+        self.choice = None
+        self._panel = None
 
-    cv2.putText(frame, "MENU", (sidebar_x1 + 20, 55), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-    cv2.putText(frame, "pinch to select", (sidebar_x1 + 20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+    def reset(self):
+        self.choice = None
 
-    for name, data in buttons.items():
-        x1, y1, x2, y2 = data["pos"]
-        color = (60, 60, 60)
-        if cursor_pos:
-            cx, cy = cursor_pos
-            if x1 < cx < x2 and y1 < cy < y2:
-                color = (0, 165, 255)
+    def button_rects(self, frame_width):
+        left = frame_width - SIDEBAR_WIDTH + SIDEBAR_PADDING
+        right = frame_width - SIDEBAR_PADDING
+        rects = []
+        for i, (label, state) in enumerate(BUTTONS):
+            top = BUTTON_TOP + i * (BUTTON_HEIGHT + BUTTON_GAP)
+            rects.append((label, state, (left, top, right, top + BUTTON_HEIGHT)))
+        return rects
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, -1)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
-        text_size = cv2.getTextSize(data["label"], cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)[0]
-        text_x = x1 + ((x2 - x1) - text_size[0]) // 2
-        text_y = y1 + ((y2 - y1) + text_size[1]) // 2
-        cv2.putText(frame, data["label"], (text_x, text_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
+    def update(self, frame, hand):
+        height, width = frame.shape[:2]
+        self._draw_sidebar(frame, width, height)
 
-    return frame
+        cursor = tuple(int(v) for v in hand.cursor) if hand.cursor else None
+        rects = self.button_rects(width)
+        hovered = self._button_at(rects, cursor)
+        for label, state, rect in rects:
+            self._draw_button(frame, label, rect, state == hovered)
 
-def check_selection(cursor_pos, frame_width):
-    if cursor_pos is None:
+        # A pinch moves the fingertip, so select what was under it just before the pinch began.
+        press_point = hand.cursor_before or hand.cursor
+        press_point = tuple(int(v) for v in press_point) if press_point else None
+        self.choice = self._button_at(rects, press_point) if hand.just_pinched else None
+
+        if cursor:
+            cv2.circle(frame, cursor, 9, CURSOR_PINCH if hand.pinching else CURSOR_IDLE, -1)
+            cv2.circle(frame, cursor, 11, (255, 255, 255), 1)
+        return frame
+
+    @staticmethod
+    def _button_at(rects, point):
+        if point is None:
+            return None
+        for _, state, (x1, y1, x2, y2) in rects:
+            if x1 < point[0] < x2 and y1 < point[1] < y2:
+                return state
         return None
-    buttons = get_buttons(frame_width)
-    cx, cy = cursor_pos
-    for name, data in buttons.items():
-        x1, y1, x2, y2 = data["pos"]
-        if x1 < cx < x2 and y1 < cy < y2:
-            return name
-    return None
+
+    def _draw_sidebar(self, frame, width, height):
+        left = width - SIDEBAR_WIDTH
+        region = frame[:, left:]
+        if self._panel is None or self._panel.shape != region.shape:
+            self._panel = np.full(region.shape, PANEL_COLOR, dtype=np.uint8)
+        frame[:, left:] = cv2.addWeighted(self._panel, 0.75, region, 0.25, 0)
+        cv2.putText(frame, "MENU", (left + SIDEBAR_PADDING, 55),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        cv2.putText(frame, "pinch to select", (left + SIDEBAR_PADDING, 85),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+
+    @staticmethod
+    def _draw_button(frame, label, rect, hovered):
+        x1, y1, x2, y2 = rect
+        cv2.rectangle(frame, (x1, y1), (x2, y2), HOVER_COLOR if hovered else BUTTON_COLOR, -1)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
+        (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)
+        cv2.putText(frame, label, (x1 + (x2 - x1 - text_w) // 2, y1 + (y2 - y1 + text_h) // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)

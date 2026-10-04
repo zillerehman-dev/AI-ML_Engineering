@@ -1,9 +1,7 @@
 import argparse
 import sys
 import time
-
 import cv2
-
 from modes import CANVAS, GHOST, MENU
 from modes.canvas import CanvasMode
 from modes.ghost import GhostMode
@@ -11,7 +9,7 @@ from modes.menu import MenuMode
 from utils import smooth
 from utils.hand_tracker import HandTracker, TrackerError
 
-WINDOW_NAME = "Gesture Vision"
+WINDOW_NAME = "Touchless Vision"
 FRAME_SIZE = (1280, 720)
 MAX_READ_FAILURES = 30
 
